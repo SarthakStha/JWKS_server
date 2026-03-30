@@ -8,7 +8,7 @@ import jwt
 import datetime
 
 hostName = "localhost"
-serverPort = 8090
+serverPort = 8080
 
 private_key = rsa.generate_private_key(
     public_exponent=65537,
@@ -38,14 +38,12 @@ keys = {
         "private_key": private_key, 
         "expiry": datetime.datetime.utcnow() + datetime.timedelta(hours=1),
         "pem": valid_pem,
-        "user": "username"
     },
     "invalid" : {
         "kid": "expiredKID", 
         "private_key": expired_key, 
         "expiry": datetime.datetime.utcnow() - datetime.timedelta(hours=1),
         "pem": expired_pem,
-        "user": "username"
     },
 }
 
@@ -86,28 +84,33 @@ class MyServer(BaseHTTPRequestHandler):
     def do_POST(self):
         parsed_path = urlparse(self.path)
         params = parse_qs(parsed_path.query)
-        if parsed_path.path == "/auth":
-            
+        if parsed_path.path == "/auth":  
             headers = {
-                "kid": "goodKID"
+                "kid": keys["valid"]["kid"]
             }
-            
             token_payload = {
                 "user": "username",
                 "exp": datetime.datetime.utcnow() + datetime.timedelta(hours=1)
             }
 
-            pem = valid_pem
+            pem = keys["valid"]["pem"]
 
             if 'expired' in params:
-                headers["kid"] = "expiredKID"
+                headers["kid"] = keys["invalid"]["kid"]
                 token_payload["exp"] = datetime.datetime.utcnow() - datetime.timedelta(hours=1)
-                pem = expired_pem
-            encoded_jwt = jwt.encode(token_payload, pem, algorithm="RS256", headers=headers)
-            self.send_response(200)
-            self.end_headers()
-            self.wfile.write(bytes(encoded_jwt, "utf-8"))
-            return
+                pem = keys["invalid"]["pem"]
+            
+            try:
+                encoded_jwt = jwt.encode(token_payload, pem, algorithm="RS256", headers=headers)
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(bytes(encoded_jwt, "utf-8"))
+                return
+
+            except Exception as e:
+                self.send_response(500)
+                self.end_headers()
+                return
 
         self.send_response(405)
         self.end_headers()
