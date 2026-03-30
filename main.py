@@ -5,10 +5,28 @@ from urllib.parse import urlparse, parse_qs
 import base64
 import json
 import jwt
+import sqlite3
 import datetime
 
 hostName = "localhost"
-serverPort = 8080
+serverPort = 8090
+
+# Name of the DB file
+DB_FILE = "totally_not_my_privateKeys.db"
+
+# Initializing the DB
+def init_db():
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS keys(
+            kid INTEGER PRIMARY KEY AUTOINCREMENT,
+            key BLOB NOT NULL,
+            exp INTEGER NOT NULL
+        )
+    """)
+    conn.commit()
+    return conn
 
 private_key = rsa.generate_private_key(
     public_exponent=65537,
@@ -29,6 +47,33 @@ expired_pem = expired_key.private_bytes(
     format=serialization.PrivateFormat.TraditionalOpenSSL,
     encryption_algorithm=serialization.NoEncryption()
 )
+
+conn = init_db()
+
+def store_keys(conn):
+    cursor = conn.cursor()
+    now = datetime.datetime.utcnow()
+
+    keys_to_store = [
+        (
+            valid_pem,
+            int((now + datetime.timedelta(hours=1)).timestamp())   # future — valid
+        ),
+        (
+            expired_pem,
+            int((now - datetime.timedelta(hours=1)).timestamp())   # past — expired
+        ),
+    ]
+
+    cursor.executemany(
+        """
+            INSERT INTO keys (key, exp) VALUES (?, ?)
+        """, 
+        keys_to_store
+    )
+    conn.commit()
+
+store_keys(conn)
 
 numbers = private_key.private_numbers()
 
