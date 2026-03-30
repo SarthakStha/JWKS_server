@@ -8,8 +8,10 @@ import jwt
 import sqlite3
 import datetime
 
+
+# Initializing the hostname and the serverport
 hostName = "localhost"
-serverPort = 8090
+serverPort = 8080
 
 # Name of the DB file
 DB_FILE = "totally_not_my_privateKeys.db"
@@ -111,6 +113,8 @@ def int_to_base64(value):
     return encoded.decode('utf-8')
 
 
+# Custom class definition 
+# base properties inherited from BaseHTTPRequestHandler
 class MyServer(BaseHTTPRequestHandler):
     def do_PUT(self):
         self.send_response(405)
@@ -164,6 +168,7 @@ class MyServer(BaseHTTPRequestHandler):
             headers = {"kid": str(kid)}
 
             try:
+                # Creating the encoded JWT
                 encoded_jwt = jwt.encode(token_payload, key_blob, algorithm="RS256", headers=headers)
                 self.send_response(200)
                 self.send_header("Content-Type", "application/jwt")
@@ -181,6 +186,7 @@ class MyServer(BaseHTTPRequestHandler):
         return
 
     def do_GET(self):
+        # initial packet path filter
         if self.path == "/.well-known/jwks.json":
             self.send_response(200)
             self.send_header("Content-type", "application/json")

@@ -37,9 +37,21 @@ pip install -r requirements.txt
 python server.py
 ```
 
+## Running the Internal Tests
+Note: The needs to run while the server is already running.
+```bash
+python test_server.py 
+```
+
+## Running the Gradebot (x86)
+Note: Port 8080 is reserved in windows. This results in both the server and gradebot, throwing an error. While all the development was done on windows. Because of the port issue, the final test run for the internal tests and the gradebot was done on a mac.
+```bash
+./gradebot.exe project-2 --run="python main.py"
+```
+
 ---
 
-## Endpoints
+## Deliverables
 
 ### Grade Bot Evaluation
 
@@ -49,5 +61,5 @@ python server.py
 
 ![GET /jwks.json demo][image2]
 
-[image1]: path/to/image1.png
-[image2]: path/to/image2.png
+[image1]: images/gradebot.png
+[image2]: images/internal_tests.png
