@@ -137,8 +137,10 @@ class MyServer(BaseHTTPRequestHandler):
         params = parse_qs(parsed_path.query)
         if parsed_path.path == "/auth": 
             now = int(datetime.datetime.utcnow().timestamp())
+            # Checking if expired parameter is present
             use_expired = 'expired' in params
 
+            # Querring the DB based onthe expired property
             cursor = conn.cursor()
             if use_expired:
                 cursor.execute("SELECT kid, key, exp FROM keys WHERE exp < ? ORDER BY exp DESC LIMIT 1", (now,))
@@ -152,6 +154,7 @@ class MyServer(BaseHTTPRequestHandler):
                 self.end_headers()
                 return
 
+            # Getting the properties associated with the key
             kid, key_blob, exp = row
 
             token_payload = {
@@ -183,25 +186,29 @@ class MyServer(BaseHTTPRequestHandler):
             self.send_header("Content-type", "application/json")
             self.end_headers()
 
-            now = datetime.datetime.utcnow()
-            valid_keys = [key for key in keys.values() if key["expiry"] > now]
-            pub_numbers = [k["private_key"].private_numbers().public_numbers for k in valid_keys]
+            now = int(datetime.datetime.utcnow().timestamp())
 
-            jwks = {
-                "keys": [
-                    {
-                        "alg": "RS256",
-                        "kty": "RSA",
-                        "use": "sig",
-                        "kid": key["kid"],
-                        "n": int_to_base64(pub.n),
-                        "e": int_to_base64(pub.e),
-                    }
-                    for key, pub in zip(valid_keys, pub_numbers)
-                ]
-            }
+            cursor = conn.cursor()
 
-            self.wfile.write(bytes(json.dumps(jwks), "utf-8"))
+            # Reading only valid keys from the DB
+            cursor.execute("SELECT kid, key FROM keys WHERE exp > ?", (now,))
+            rows = cursor.fetchall()
+
+            # Creating the jwks response for the private keys
+            jwks_keys = []
+            for kid, key_blob in rows:
+                loaded_key = serialization.load_pem_private_key(key_blob, password=None)
+                pub_numbers = loaded_key.private_numbers().public_numbers
+                jwks_keys.append({
+                    "alg": "RS256",
+                    "kty": "RSA",
+                    "use": "sig",
+                    "kid": str(kid),
+                    "n": int_to_base64(pub_numbers.n),
+                    "e": int_to_base64(pub_numbers.e),
+                })
+
+            self.wfile.write(bytes(json.dumps({"keys": jwks_keys}), "utf-8"))
             return
 
         self.send_response(405)
