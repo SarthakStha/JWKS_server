@@ -8,7 +8,7 @@ import jwt
 import datetime
 
 hostName = "localhost"
-serverPort = 8080
+serverPort = 8090
 
 private_key = rsa.generate_private_key(
     public_exponent=65537,
@@ -19,7 +19,7 @@ expired_key = rsa.generate_private_key(
     key_size=2048,
 )
 
-pem = private_key.private_bytes(
+valid_pem = private_key.private_bytes(
     encoding=serialization.Encoding.PEM,
     format=serialization.PrivateFormat.TraditionalOpenSSL,
     encryption_algorithm=serialization.NoEncryption()
@@ -32,8 +32,26 @@ expired_pem = expired_key.private_bytes(
 
 numbers = private_key.private_numbers()
 
+keys = {
+    "valid" : {
+        "kid": "goodKID", 
+        "private_key": private_key, 
+        "expiry": datetime.datetime.utcnow() + datetime.timedelta(hours=1),
+        "pem": valid_pem,
+        "user": "username"
+    },
+    "invalid" : {
+        "kid": "expiredKID", 
+        "private_key": expired_key, 
+        "expiry": datetime.datetime.utcnow() - datetime.timedelta(hours=1),
+        "pem": expired_pem,
+        "user": "username"
+    },
+}
+
 
 def int_to_base64(value):
+
     """Convert an integer to a Base64URL-encoded string"""
     value_hex = format(value, 'x')
     # Ensure even length
@@ -69,16 +87,22 @@ class MyServer(BaseHTTPRequestHandler):
         parsed_path = urlparse(self.path)
         params = parse_qs(parsed_path.query)
         if parsed_path.path == "/auth":
+            
             headers = {
                 "kid": "goodKID"
             }
+            
             token_payload = {
                 "user": "username",
                 "exp": datetime.datetime.utcnow() + datetime.timedelta(hours=1)
             }
+
+            pem = valid_pem
+
             if 'expired' in params:
                 headers["kid"] = "expiredKID"
                 token_payload["exp"] = datetime.datetime.utcnow() - datetime.timedelta(hours=1)
+                pem = expired_pem
             encoded_jwt = jwt.encode(token_payload, pem, algorithm="RS256", headers=headers)
             self.send_response(200)
             self.end_headers()
@@ -94,19 +118,26 @@ class MyServer(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-type", "application/json")
             self.end_headers()
-            keys = {
+
+            now = datetime.datetime.utcnow()
+            valid_keys = [key for key in keys.values() if key["expiry"] > now]
+            pub_numbers = [k["private_key"].private_numbers().public_numbers for k in valid_keys]
+
+            jwks = {
                 "keys": [
                     {
                         "alg": "RS256",
                         "kty": "RSA",
                         "use": "sig",
-                        "kid": "goodKID",
-                        "n": int_to_base64(numbers.public_numbers.n),
-                        "e": int_to_base64(numbers.public_numbers.e),
+                        "kid": key["kid"],
+                        "n": int_to_base64(pub.n),
+                        "e": int_to_base64(pub.e),
                     }
+                    for key, pub in zip(valid_keys, pub_numbers)
                 ]
             }
-            self.wfile.write(bytes(json.dumps(keys), "utf-8"))
+
+            self.wfile.write(bytes(json.dumps(jwks), "utf-8"))
             return
 
         self.send_response(405)
