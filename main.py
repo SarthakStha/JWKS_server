@@ -18,6 +18,8 @@ DB_FILE = "totally_not_my_privateKeys.db"
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
+
+    # Creating the query
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS keys(
             kid INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -28,6 +30,7 @@ def init_db():
     conn.commit()
     return conn
 
+# Generating the keys
 private_key = rsa.generate_private_key(
     public_exponent=65537,
     key_size=2048,
@@ -37,6 +40,7 @@ expired_key = rsa.generate_private_key(
     key_size=2048,
 )
 
+# Generating the signatures
 valid_pem = private_key.private_bytes(
     encoding=serialization.Encoding.PEM,
     format=serialization.PrivateFormat.TraditionalOpenSSL,
@@ -48,12 +52,12 @@ expired_pem = expired_key.private_bytes(
     encryption_algorithm=serialization.NoEncryption()
 )
 
-conn = init_db()
-
+# Stores the keys in the DB
 def store_keys(conn):
     cursor = conn.cursor()
     now = datetime.datetime.utcnow()
 
+    # Defining the parameter
     keys_to_store = [
         (
             valid_pem,
@@ -65,6 +69,7 @@ def store_keys(conn):
         ),
     ]
 
+    # Running the paramterrized query
     cursor.executemany(
         """
             INSERT INTO keys (key, exp) VALUES (?, ?)
@@ -73,10 +78,12 @@ def store_keys(conn):
     )
     conn.commit()
 
+conn = init_db()
 store_keys(conn)
 
-numbers = private_key.private_numbers()
+# numbers = private_key.private_numbers()
 
+# Defining the Vaild & Invalid Keys
 keys = {
     "valid" : {
         "kid": "goodKID", 
@@ -94,7 +101,6 @@ keys = {
 
 
 def int_to_base64(value):
-
     """Convert an integer to a Base64URL-encoded string"""
     value_hex = format(value, 'x')
     # Ensure even length
@@ -129,29 +135,39 @@ class MyServer(BaseHTTPRequestHandler):
     def do_POST(self):
         parsed_path = urlparse(self.path)
         params = parse_qs(parsed_path.query)
-        if parsed_path.path == "/auth":  
-            headers = {
-                "kid": keys["valid"]["kid"]
-            }
+        if parsed_path.path == "/auth": 
+            now = int(datetime.datetime.utcnow().timestamp())
+            use_expired = 'expired' in params
+
+            cursor = conn.cursor()
+            if use_expired:
+                cursor.execute("SELECT kid, key, exp FROM keys WHERE exp < ? ORDER BY exp DESC LIMIT 1", (now,))
+            else:
+                cursor.execute("SELECT kid, key, exp FROM keys WHERE exp > ? ORDER BY exp ASC LIMIT 1", (now,))
+
+            row = cursor.fetchone()
+
+            if not row:
+                self.send_response(404)
+                self.end_headers()
+                return
+
+            kid, key_blob, exp = row
+
             token_payload = {
                 "user": "username",
-                "exp": datetime.datetime.utcnow() + datetime.timedelta(hours=1)
+                "exp": exp
             }
+            headers = {"kid": str(kid)}
 
-            pem = keys["valid"]["pem"]
-
-            if 'expired' in params:
-                headers["kid"] = keys["invalid"]["kid"]
-                token_payload["exp"] = datetime.datetime.utcnow() - datetime.timedelta(hours=1)
-                pem = keys["invalid"]["pem"]
-            
             try:
-                encoded_jwt = jwt.encode(token_payload, pem, algorithm="RS256", headers=headers)
+                encoded_jwt = jwt.encode(token_payload, key_blob, algorithm="RS256", headers=headers)
                 self.send_response(200)
+                self.send_header("Content-Type", "application/jwt")
                 self.end_headers()
                 self.wfile.write(bytes(encoded_jwt, "utf-8"))
                 return
-
+            
             except Exception as e:
                 self.send_response(500)
                 self.end_headers()
@@ -194,10 +210,16 @@ class MyServer(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    # initialize the custom MyServer class
     webServer = HTTPServer((hostName, serverPort), MyServer)
+
+    # Continue running the server indefinately until
+    # The user interrupts the server.
     try:
         webServer.serve_forever()
     except KeyboardInterrupt:
         pass
-
+    
+    # Close the DB connection & the webserver
+    conn.close()
     webServer.server_close()
