@@ -53,8 +53,9 @@ def decrypt_private_key(encrypted_data: bytes) -> bytes:
     ciphertext = encrypted_data[12:]
     return cipher.decrypt(nonce, ciphertext, None)
 
-# Initializing the DB
-def init_db():
+# Initializing the DB Tables
+# keys table
+def init_keys_table():
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
 
@@ -64,6 +65,43 @@ def init_db():
             kid INTEGER PRIMARY KEY AUTOINCREMENT,
             key BLOB NOT NULL,
             exp INTEGER NOT NULL
+        )
+    """)
+    conn.commit()
+    return conn
+
+# users table
+def init_users_table():
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+
+    # Creating the query
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS users(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL UNIQUE,
+            password_hash TEXT NOT NULL,
+            email TEXT UNIQUE,
+            date_registered TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            last_login TIMESTAMP
+        )
+    """)
+    conn.commit()
+    return conn
+
+# auth_logs table
+def init_auth_logs_table():
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+
+    # Creating the query
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS auth_logs(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            request_ip TEXT NOT NULL,
+            request_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            user_id INTEGER,  
+            FOREIGN KEY(user_id) REFERENCES users(id)
         )
     """)
     conn.commit()
@@ -121,8 +159,8 @@ def store_keys(conn):
     )
     conn.commit()
 
-conn = init_db()
-store_keys(conn)
+keys_conn = init_keys_table()
+store_keys(keys_conn)
 
 # numbers = private_key.private_numbers()
 
@@ -186,7 +224,7 @@ class MyServer(BaseHTTPRequestHandler):
             use_expired = 'expired' in params
 
             # Querring the DB based onthe expired property
-            cursor = conn.cursor()
+            cursor = keys_conn.cursor()
             if use_expired:
                 cursor.execute("SELECT kid, key, exp FROM keys WHERE exp < ? ORDER BY exp DESC LIMIT 1", (now,))
             else:
@@ -243,11 +281,11 @@ class MyServer(BaseHTTPRequestHandler):
 
             now = int(datetime.datetime.utcnow().timestamp())
 
-            cursor = conn.cursor()
+            keys_cursor = keys_conn.cursor()
 
             # Reading only valid keys from the DB
-            cursor.execute("SELECT kid, key FROM keys WHERE exp > ?", (now,))
-            rows = cursor.fetchall()
+            keys_cursor.execute("SELECT kid, key FROM keys WHERE exp > ?", (now,))
+            rows = keys_cursor.fetchall()
 
             # Creating the jwks response for the private keys
             jwks_keys = []
@@ -289,5 +327,5 @@ if __name__ == "__main__":
         pass
     
     # Close the DB connection & the webserver
-    conn.close()
+    keys_conn.close()
     webServer.server_close()
