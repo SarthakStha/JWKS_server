@@ -65,7 +65,7 @@ def decrypt_private_key(encrypted_data: bytes) -> bytes:
     return cipher.decrypt(nonce, ciphertext, None)
 
 # DB Tables Initializer function
-def init_keys_table():
+def init_table():
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
 
@@ -157,7 +157,7 @@ def store_keys(conn):
     conn.commit()
 
 # initializing the DB tables
-conn = init_keys_table()
+conn = init_table()
 store_keys(conn)
 
 # numbers = private_key.private_numbers()
@@ -222,54 +222,132 @@ class MyServer(BaseHTTPRequestHandler):
     def do_POST(self):
         parsed_path = urlparse(self.path)
         params = parse_qs(parsed_path.query)
-        if parsed_path.path == "/auth": 
-            now = int(datetime.datetime.utcnow().timestamp())
-            # Checking if expired parameter is present
-            use_expired = 'expired' in params
-
-            # Querring the DB based onthe expired property
-            cursor = conn.cursor()
-            if use_expired:
-                cursor.execute("SELECT kid, key, exp FROM keys WHERE exp < ? ORDER BY exp DESC LIMIT 1", (now,))
-            else:
-                cursor.execute("SELECT kid, key, exp FROM keys WHERE exp > ? ORDER BY exp ASC LIMIT 1", (now,))
-
-            row = cursor.fetchone()
-
-            if not row:
-                self.send_response(404)
-                self.end_headers()
-                return
-
-            # Getting the properties associated with the key
-            kid, encrypted_key_blob, exp = row
-            
-            # Decrypt the private key
+        
+        if parsed_path.path == "/register":
+            # Handle user registration
             try:
-                key_blob = decrypt_private_key(encrypted_key_blob)
+                # Read the request body
+                content_length = int(self.headers.get('Content-Length', 0))
+                body = self.rfile.read(content_length).decode('utf-8')
+                
+                # Parse JSON
+                request_data = json.loads(body)
+                username = request_data.get('username')
+                email = request_data.get('email')
+                
+                # Validate input
+                if not username or not email:
+                    self.send_response(400)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    error_response = json.dumps({
+                        "error": "Both username and email are required"
+                    })
+                    self.wfile.write(bytes(error_response, "utf-8"))
+                    return
+                
+                # Generate & hash the password
+                password = generate_password()
+                password_hash = hash_password(password)
+                
+                # Store in database
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                    INSERT INTO users (username, password_hash, email)
+                    VALUES (?, ?, ?)
+                    """,
+                    (username, password_hash, email)
+                )
+                conn.commit()
+                
+                # Return success response with generated password
+                self.send_response(201)  # CREATED
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                response = json.dumps({"password": password})
+                self.wfile.write(bytes(response, "utf-8"))
+                return
+            
             except Exception as e:
                 self.send_response(500)
+                self.send_header("Content-Type", "application/json")
                 self.end_headers()
+                error_response = json.dumps({"error": str(e)})
+                self.wfile.write(bytes(error_response, "utf-8"))
                 return
-
-            token_payload = {
-                "user": "username",
-                "exp": exp
-            }
-            headers = {"kid": str(kid)}
-
+        
+        elif parsed_path.path == "/auth": 
             try:
-                # Creating the encoded JWT
+                # Read the request body
+                content_length = int(self.headers.get('Content-Length', 0))
+                body = self.rfile.read(content_length).decode('utf-8')
+                request_data = json.loads(body)
+                username = request_data.get('username')
+                
+                if not username:
+                    self.send_response(400)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(bytes(json.dumps({"error": "Username is required"}), "utf-8"))
+                    return
+                
+                # Get user ID and log authentication request
+                cursor = conn.cursor()
+                cursor.execute("SELECT id FROM users WHERE username = ?", (username,))
+                user_row = cursor.fetchone()
+                
+                if not user_row:
+                    self.send_response(404)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(bytes(json.dumps({"error": "User not found"}), "utf-8"))
+                    return
+                
+                user_id = user_row[0]
+                client_ip = self.client_address[0]
+                
+                # Log the authentication request
+                cursor.execute(
+                    "INSERT INTO auth_logs (request_ip, user_id) VALUES (?, ?)",
+                    (client_ip, user_id)
+                )
+                conn.commit()
+                
+                # Get the key for token generation
+                now = int(datetime.datetime.utcnow().timestamp())
+                use_expired = 'expired' in params
+                
+                if use_expired:
+                    cursor.execute("SELECT kid, key, exp FROM keys WHERE exp < ? ORDER BY exp DESC LIMIT 1", (now,))
+                else:
+                    cursor.execute("SELECT kid, key, exp FROM keys WHERE exp > ? ORDER BY exp ASC LIMIT 1", (now,))
+
+                row = cursor.fetchone()
+                if not row:
+                    self.send_response(404)
+                    self.send_header("Content-Type", "application/json")
+                    self.end_headers()
+                    self.wfile.write(bytes(json.dumps({"error": "No suitable key found"}), "utf-8"))
+                    return
+
+                kid, encrypted_key_blob, exp = row
+                key_blob = decrypt_private_key(encrypted_key_blob)
+
+                token_payload = {"user": username, "exp": exp}
+                headers = {"kid": str(kid)}
+
                 encoded_jwt = jwt.encode(token_payload, key_blob, algorithm="RS256", headers=headers)
                 self.send_response(200)
                 self.send_header("Content-Type", "application/jwt")
                 self.end_headers()
                 self.wfile.write(bytes(encoded_jwt, "utf-8"))
-                return
             
             except Exception as e:
                 self.send_response(500)
+                self.send_header("Content-Type", "application/json")
                 self.end_headers()
+                self.wfile.write(bytes(json.dumps({"error": str(e)}), "utf-8"))
                 return
 
         self.send_response(405)
