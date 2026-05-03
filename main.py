@@ -2,7 +2,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-from cryptography.hazmat.kdf.pbkdf2 import PBKDF2
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from urllib.parse import urlparse, parse_qs
 import base64
 import json
@@ -28,7 +28,7 @@ if not NOT_MY_KEY:
 # Derive a 32-byte key from NOT_MY_KEY using PBKDF2
 def derive_key(master_key: str) -> bytes:
     salt = b'jwks_server_salt'  
-    kdf = PBKDF2(
+    kdf = PBKDF2HMAC(
         algorithm=hashes.SHA256(),
         length=32,
         salt=salt,
