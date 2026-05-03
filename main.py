@@ -11,6 +11,8 @@ import sqlite3
 import datetime
 import os
 import secrets
+import uuid
+import argon2
 
 
 # Initializing the hostname, serverport & AES keys
@@ -38,6 +40,15 @@ ENCRYPTION_KEY = derive_key(NOT_MY_KEY)
 # Name of the DB file
 DB_FILE = "totally_not_my_privateKeys.db"
 
+# password hasher configuration
+password_hasher = argon2.PasswordHasher(
+    time_cost=2,
+    parallelism=4,
+    hash_len=32,
+    salt_len=16,
+    encoding='utf-8'
+)
+
 # Encryption and Decryption Functions
 # Format nonce (12 bytes) + tag (16 bytes) + ciphertext
 def encrypt_private_key(key_data: bytes) -> bytes:
@@ -53,13 +64,12 @@ def decrypt_private_key(encrypted_data: bytes) -> bytes:
     ciphertext = encrypted_data[12:]
     return cipher.decrypt(nonce, ciphertext, None)
 
-# Initializing the DB Tables
-# keys table
+# DB Tables Initializer function
 def init_keys_table():
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
 
-    # Creating the query
+    # keys table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS keys(
             kid INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -67,15 +77,8 @@ def init_keys_table():
             exp INTEGER NOT NULL
         )
     """)
-    conn.commit()
-    return conn
 
-# users table
-def init_users_table():
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-
-    # Creating the query
+    # users table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS users(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -86,15 +89,8 @@ def init_users_table():
             last_login TIMESTAMP
         )
     """)
-    conn.commit()
-    return conn
 
-# auth_logs table
-def init_auth_logs_table():
-    conn = sqlite3.connect(DB_FILE)
-    cursor = conn.cursor()
-
-    # Creating the query
+    # auth_logs table
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS auth_logs(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -104,6 +100,7 @@ def init_auth_logs_table():
             FOREIGN KEY(user_id) REFERENCES users(id)
         )
     """)
+
     conn.commit()
     return conn
 
@@ -159,8 +156,9 @@ def store_keys(conn):
     )
     conn.commit()
 
-keys_conn = init_keys_table()
-store_keys(keys_conn)
+# initializing the DB tables
+conn = init_keys_table()
+store_keys(conn)
 
 # numbers = private_key.private_numbers()
 
@@ -180,7 +178,6 @@ keys = {
     },
 }
 
-
 def int_to_base64(value):
     """Convert an integer to a Base64URL-encoded string"""
     value_hex = format(value, 'x')
@@ -191,6 +188,13 @@ def int_to_base64(value):
     encoded = base64.urlsafe_b64encode(value_bytes).rstrip(b'=')
     return encoded.decode('utf-8')
 
+# Generate password using UUIDv4
+def generate_password() -> str:
+    return str(uuid.uuid4())
+
+# hashing the password using argon2 
+def hash_password(password: str) -> str:
+    return password_hasher.hash(password)
 
 # Custom class definition 
 # base properties inherited from BaseHTTPRequestHandler
@@ -224,7 +228,7 @@ class MyServer(BaseHTTPRequestHandler):
             use_expired = 'expired' in params
 
             # Querring the DB based onthe expired property
-            cursor = keys_conn.cursor()
+            cursor = conn.cursor()
             if use_expired:
                 cursor.execute("SELECT kid, key, exp FROM keys WHERE exp < ? ORDER BY exp DESC LIMIT 1", (now,))
             else:
@@ -281,11 +285,11 @@ class MyServer(BaseHTTPRequestHandler):
 
             now = int(datetime.datetime.utcnow().timestamp())
 
-            keys_cursor = keys_conn.cursor()
+            cursor = conn.cursor()
 
             # Reading only valid keys from the DB
-            keys_cursor.execute("SELECT kid, key FROM keys WHERE exp > ?", (now,))
-            rows = keys_cursor.fetchall()
+            cursor.execute("SELECT kid, key FROM keys WHERE exp > ?", (now,))
+            rows = cursor.fetchall()
 
             # Creating the jwks response for the private keys
             jwks_keys = []
@@ -327,5 +331,5 @@ if __name__ == "__main__":
         pass
     
     # Close the DB connection & the webserver
-    keys_conn.close()
+    conn.close()
     webServer.server_close()
