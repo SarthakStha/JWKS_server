@@ -63,7 +63,7 @@ Note: Port 8080 is reserved in windows. This results in both the server and grad
 ### Grade Bot Evaluation
 
 ![POST /auth demo][image1]
-
+(Note: the image has been updated in the images folder but the change is not reflecting in rendered readme)
 ### Internal Test coverage:
 
 ![GET /jwks.json demo][image2]
