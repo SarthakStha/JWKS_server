@@ -1,20 +1,57 @@
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives import serialization, hashes
 from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.kdf.pbkdf2 import PBKDF2
 from urllib.parse import urlparse, parse_qs
 import base64
 import json
 import jwt
 import sqlite3
 import datetime
+import os
+import secrets
 
 
-# Initializing the hostname and the serverport
+# Initializing the hostname, serverport & AES keys
 hostName = "localhost"
-serverPort = 8080
+serverPort = 8090
+
+# Load the encryption key from environment variable
+NOT_MY_KEY = os.getenv("NOT_MY_KEY")
+if not NOT_MY_KEY:
+    raise ValueError("NOT_MY_KEY environment variable is required for encryption")
+
+# Derive a 32-byte key from NOT_MY_KEY using PBKDF2
+def derive_key(master_key: str) -> bytes:
+    salt = b'jwks_server_salt'  
+    kdf = PBKDF2(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=salt,
+        iterations=100000,
+    )
+    return kdf.derive(master_key.encode())
+
+ENCRYPTION_KEY = derive_key(NOT_MY_KEY)
 
 # Name of the DB file
 DB_FILE = "totally_not_my_privateKeys.db"
+
+# Encryption and Decryption Functions
+# Format nonce (12 bytes) + tag (16 bytes) + ciphertext
+def encrypt_private_key(key_data: bytes) -> bytes:
+    cipher = AESGCM(ENCRYPTION_KEY)
+    nonce = secrets.token_bytes(12)  # 96-bit nonce for GCM
+    ciphertext = cipher.encrypt(nonce, key_data, None)
+    # Prepend nonce to ciphertext for storage
+    return nonce + ciphertext
+
+def decrypt_private_key(encrypted_data: bytes) -> bytes:
+    cipher = AESGCM(ENCRYPTION_KEY)
+    nonce = encrypted_data[:12]
+    ciphertext = encrypted_data[12:]
+    return cipher.decrypt(nonce, ciphertext, None)
 
 # Initializing the DB
 def init_db():
@@ -59,14 +96,18 @@ def store_keys(conn):
     cursor = conn.cursor()
     now = datetime.datetime.utcnow()
 
+    # Encrypt the private keys
+    encrypted_valid_pem = encrypt_private_key(valid_pem)
+    encrypted_expired_pem = encrypt_private_key(expired_pem)
+
     # Defining the parameter
     keys_to_store = [
         (
-            valid_pem,
+            encrypted_valid_pem,
             int((now + datetime.timedelta(hours=1)).timestamp())   # future — valid
         ),
         (
-            expired_pem,
+            encrypted_expired_pem,
             int((now - datetime.timedelta(hours=1)).timestamp())   # past — expired
         ),
     ]
@@ -159,7 +200,15 @@ class MyServer(BaseHTTPRequestHandler):
                 return
 
             # Getting the properties associated with the key
-            kid, key_blob, exp = row
+            kid, encrypted_key_blob, exp = row
+            
+            # Decrypt the private key
+            try:
+                key_blob = decrypt_private_key(encrypted_key_blob)
+            except Exception as e:
+                self.send_response(500)
+                self.end_headers()
+                return
 
             token_payload = {
                 "user": "username",
@@ -203,16 +252,22 @@ class MyServer(BaseHTTPRequestHandler):
             # Creating the jwks response for the private keys
             jwks_keys = []
             for kid, key_blob in rows:
-                loaded_key = serialization.load_pem_private_key(key_blob, password=None)
-                pub_numbers = loaded_key.private_numbers().public_numbers
-                jwks_keys.append({
-                    "alg": "RS256",
-                    "kty": "RSA",
-                    "use": "sig",
-                    "kid": str(kid),
-                    "n": int_to_base64(pub_numbers.n),
-                    "e": int_to_base64(pub_numbers.e),
-                })
+                try:
+                    # Decrypt the private key
+                    decrypted_key_blob = decrypt_private_key(key_blob)
+                    loaded_key = serialization.load_pem_private_key(decrypted_key_blob, password=None)
+                    pub_numbers = loaded_key.private_numbers().public_numbers
+                    jwks_keys.append({
+                        "alg": "RS256",
+                        "kty": "RSA",
+                        "use": "sig",
+                        "kid": str(kid),
+                        "n": int_to_base64(pub_numbers.n),
+                        "e": int_to_base64(pub_numbers.e),
+                    })
+                except Exception as e:
+                    # Log error but continue processing other keys
+                    continue
 
             self.wfile.write(bytes(json.dumps({"keys": jwks_keys}), "utf-8"))
             return

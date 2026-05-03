@@ -1,3 +1,8 @@
 venv/
 # gradebot.exe
 *.db
+.env
+.env.local
+*.key
+*.pem
+__pycache__/

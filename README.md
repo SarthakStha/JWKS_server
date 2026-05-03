@@ -21,10 +21,17 @@ source venv/bin/activate
 ```
 On Windows:
 ```bash
-source venv\Scripts\activate
+source venv/Scripts/activate
 ```
 
-**4. Install dependencies**
+**4. Setting up environment variable (.env)** 
+
+Create a `.env` file in the project root:
+```
+NOT_MY_KEY=your_secret_key_here
+```
+
+**5. Install dependencies**
 ```bash
 pip install -r requirements.txt
 ```
