@@ -17,12 +17,13 @@ import argon2
 
 # Initializing the hostname, serverport & AES keys
 hostName = "localhost"
-serverPort = 8090
+serverPort = 8080
 
 # Load the encryption key from environment variable
 NOT_MY_KEY = os.getenv("NOT_MY_KEY")
 if not NOT_MY_KEY:
-    raise ValueError("NOT_MY_KEY environment variable is required for encryption")
+    print("WARNING: NOT_MY_KEY environment variable not set. Using default")
+    NOT_MY_KEY = "default-key"
 
 # Derive a 32-byte key from NOT_MY_KEY using PBKDF2
 def derive_key(master_key: str) -> bytes:
@@ -129,6 +130,13 @@ expired_pem = expired_key.private_bytes(
 # Stores the keys in the DB
 def store_keys(conn):
     cursor = conn.cursor()
+    
+    # Check if keys already exist to avoid duplicates
+    cursor.execute("SELECT COUNT(*) FROM keys")
+    if cursor.fetchone()[0] > 0:
+        print("Keys already stored in database, skipping...")
+        return
+    
     now = datetime.datetime.utcnow()
 
     # Encrypt the private keys
@@ -147,7 +155,7 @@ def store_keys(conn):
         ),
     ]
 
-    # Running the paramterrized query
+    # Running the parameterized query
     cursor.executemany(
         """
             INSERT INTO keys (key, exp) VALUES (?, ?)
@@ -155,14 +163,13 @@ def store_keys(conn):
         keys_to_store
     )
     conn.commit()
+    print("Keys stored in database successfully")
 
 # initializing the DB tables
 conn = init_table()
 store_keys(conn)
 
-# numbers = private_key.private_numbers()
-
-# Defining the Vaild & Invalid Keys
+# Defining the Valid & Invalid Keys (in-memory reference)
 keys = {
     "valid" : {
         "kid": "goodKID", 
@@ -199,6 +206,10 @@ def hash_password(password: str) -> str:
 # Custom class definition 
 # base properties inherited from BaseHTTPRequestHandler
 class MyServer(BaseHTTPRequestHandler):
+    def log_message(self, format, *args):
+        """Suppress default logging"""
+        pass
+
     def do_PUT(self):
         self.send_response(405)
         self.end_headers()
@@ -267,6 +278,15 @@ class MyServer(BaseHTTPRequestHandler):
                 self.end_headers()
                 response = json.dumps({"password": password})
                 self.wfile.write(bytes(response, "utf-8"))
+                print(f"[+] User registered: {username}")
+                return
+            
+            except sqlite3.IntegrityError as e:
+                self.send_response(409)  # Conflict
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                error_response = json.dumps({"error": "Username or email already exists"})
+                self.wfile.write(bytes(error_response, "utf-8"))
                 return
             
             except Exception as e:
@@ -275,6 +295,7 @@ class MyServer(BaseHTTPRequestHandler):
                 self.end_headers()
                 error_response = json.dumps({"error": str(e)})
                 self.wfile.write(bytes(error_response, "utf-8"))
+                print(f"[-] Registration error: {str(e)}")
                 return
         
         elif parsed_path.path == "/auth": 
@@ -342,12 +363,14 @@ class MyServer(BaseHTTPRequestHandler):
                 self.send_header("Content-Type", "application/jwt")
                 self.end_headers()
                 self.wfile.write(bytes(encoded_jwt, "utf-8"))
+                print(f"[+] Token issued for user: {username}")
             
             except Exception as e:
                 self.send_response(500)
                 self.send_header("Content-Type", "application/json")
                 self.end_headers()
                 self.wfile.write(bytes(json.dumps({"error": str(e)}), "utf-8"))
+                print(f"[-] Auth error: {str(e)}")
                 return
 
         self.send_response(405)
@@ -387,6 +410,7 @@ class MyServer(BaseHTTPRequestHandler):
                     })
                 except Exception as e:
                     # Log error but continue processing other keys
+                    print(f"[-] Error processing key {kid}: {str(e)}")
                     continue
 
             self.wfile.write(bytes(json.dumps({"keys": jwks_keys}), "utf-8"))
@@ -398,16 +422,20 @@ class MyServer(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    print(f"[*] Starting JWKS Server on {hostName}:{serverPort}")
+    print(f"[*] Database file: {DB_FILE}")
+    
     # initialize the custom MyServer class
     webServer = HTTPServer((hostName, serverPort), MyServer)
 
-    # Continue running the server indefinately until
+    # Continue running the server indefinitely until
     # The user interrupts the server.
     try:
         webServer.serve_forever()
     except KeyboardInterrupt:
-        pass
+        print("\n[*] Shutting down...")
     
     # Close the DB connection & the webserver
     conn.close()
     webServer.server_close()
+    print("[*] Server closed")
